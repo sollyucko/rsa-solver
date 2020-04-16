@@ -14,8 +14,6 @@ use std::ops::Rem;
 use tokio::stream::empty;
 use tokio::stream::{Stream, StreamExt};
 
-// Helper stuff
-
 mod utils {
     use num_integer::{ExtendedGcd, Integer};
     use std::future::Future;
@@ -222,13 +220,10 @@ where
     )
 }
 
-// TODO: future_map
-// TODO: find_first_prime_factor
-
 fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> {
     empty().merge(
         utils::stream_from_future_option(find_first_prime_factor(knowns.n.clone()))
-            .map(|p| (Guess::P(BigUint::from_usize(p).unwrap()), true)),
+            .map(|p| (Guess::P(BigUint::from(p)), true)),
     )
 }
 
