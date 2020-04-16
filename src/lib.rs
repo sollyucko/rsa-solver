@@ -112,10 +112,12 @@ mod utils {
         type Item = T;
 
         fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<T>> {
-            match Pin::new(&mut self.orig).poll_next(cx) {
-                Poll::Ready(Some(x)) => Poll::Ready((&mut self.f)(x)),
-                Poll::Ready(None) => Poll::Ready(None),
-                Poll::Pending => Poll::Pending,
+            loop {
+                match Pin::new(&mut self.orig).poll_next(cx) {
+                    Poll::Ready(Some(x)) => return Poll::Ready((&mut self.f)(x)),
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Pending => {},
+                }
             }
         }
     }
@@ -132,14 +134,16 @@ mod utils {
         type Item = S::Item;
 
         fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<S::Item>> {
-            match Pin::new(&mut self.orig).poll_next(cx) {
-                Poll::Ready(Some(x)) => match (&mut self.f)(&x) {
-                    Some(true) => Poll::Ready(Some(x)),
-                    Some(false) => Poll::Pending,
-                    None => Poll::Ready(None),
-                },
-                Poll::Ready(None) => Poll::Ready(None),
-                Poll::Pending => Poll::Pending,
+            loop {
+                match Pin::new(&mut self.orig).poll_next(cx) {
+                    Poll::Ready(Some(x)) => match (&mut self.f)(&x) {
+                        Some(true) => return Poll::Ready(Some(x)),
+                        Some(false) => {},
+                        None => return Poll::Ready(None),
+                    },
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Pending => {},
+                }
             }
         }
     }
@@ -207,7 +211,7 @@ pub enum Guess {
     Q(BigUint),
 }
 
-fn find_first_prime_factor<N>(n: N) -> impl Future<Output = Option<usize>> + 'static
+fn find_first_prime_factor<N>(n: N) -> impl Future<Output = Option<usize>> 
 where
     N: Integer + FromPrimitive + Unpin + 'static,
     for<'a> &'a N: Rem<&'a N, Output = N>,
@@ -228,6 +232,8 @@ fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> {
 }
 
 fn check_guess(knowns: &RsaVars, guess: Guess, is_certain: bool) -> Option<Result<BigUint, Guess>> {
+    println!("{:?} {:?} {:?}", knowns, &guess, is_certain);
+
     match guess.clone() {
         Guess::M(m) => {
             if m.modpow(&knowns.e, &knowns.n) == knowns.c {
@@ -271,9 +277,6 @@ fn check_guess(knowns: &RsaVars, guess: Guess, is_certain: bool) -> Option<Resul
     }
 }
 
-/// ```
-/// use rsa_solver::{find_m, RsaVars};
-/// assert_eq!(find_m(&RsaVars { n: (143u8).into(), c: (26u8).into(), e: (17u8).into(), ..Default::default() }), Ok((130u8).into()));
 #[tokio::main]
 pub async fn find_m(knowns: &RsaVars) -> Result<BigUint, Option<Guess>> {
     match get_guesses(knowns)
@@ -288,16 +291,34 @@ pub async fn find_m(knowns: &RsaVars) -> Result<BigUint, Option<Guess>> {
     }
 }
 
-/*pub fn create_rsa_vars_c_n_e(c: BigUint, n: BigUint, e: BigUint) -> RsaVars {
-    RsaVars { c, n, e, ..Default::default() }
-}*/
-
 /// Copied from https://blairsecrsa.clamchowder.repl.co/
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::stream::iter;
     
-    #[test]
+    /*#[tokio::test]
+    async fn test_filter_while_some_true() {
+        assert_eq!(
+            iter(&[1, 2, 3]).filter_while(move |p| Some(true)).next().await,
+            Some(&1),
+        );
+    }*/
+    
+    #[tokio::test]
+    async fn test_filter_while_some_false() {
+        assert_eq!(
+            iter(&[1, 2, 3]).filter_while(move |p| Some(*p == &2)).next().await,
+            Some(&2),
+        );
+    }
+
+    /*#[tokio::test]
+    async fn test_first_prime_factor_143() {
+        assert_eq!(find_first_prime_factor(BigUint::from(143u8)).await, Some(11));
+    }*/
+
+    /*#[test]
     fn blairsecrsa_1() {
         let knowns = RsaVars {
             n: BigUint::from(143u8),
@@ -306,5 +327,5 @@ mod tests {
         };
         let m = find_m(&knowns);
         assert_eq!(m, Ok(BigUint::from(130u8)));
-    }
+    }*/
 }
