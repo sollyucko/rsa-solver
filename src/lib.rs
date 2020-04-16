@@ -79,31 +79,6 @@ pub enum Guess {
     Q(BigUint),
 }
 
-struct StreamFromFuture<F: Future> {
-    fut: F,
-    is_complete: bool,
-}
-impl<F: Future> Stream for StreamFromFuture<F> where F: Unpin {
-    type Item = F::Output;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<F::Output>> {
-        if self.is_complete {
-            Poll::Ready(None)
-        } else {
-            match Pin::new(&mut self.fut).poll(cx) {
-                Poll::Ready(x) => {
-                    self.is_complete = true;
-                    Poll::Ready(Some(x))
-                },
-                Poll::Pending => Poll::Pending,
-            }
-        }
-    }
-}
-fn stream_from_future<F: Future>(fut: F) -> impl Stream<Item = F::Output> where F: Unpin {
-    StreamFromFuture { fut, is_complete: false }
-}
-
 struct StreamFromFutureOption<T, F: Future<Output = Option<T>>> {
     fut: F,
     is_complete: bool,
@@ -147,12 +122,12 @@ struct MapWhileStream<T, S: Stream, F: FnMut(S::Item) -> Option<T>> {
     orig: S,
     f: F,
 }
-impl<T, S: Stream, F: FnMut(S::Item) -> Option<T>> Stream for MapWhileStream<T, S, F> {
+impl<T, S: Stream, F: FnMut(S::Item) -> Option<T>> Stream for MapWhileStream<T, S, F> where S: Unpin, F: Unpin {
     type Item = T;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<T>> {
-        match unsafe { self.as_mut().map_unchecked_mut(|x| &mut x.orig) }.poll_next(cx) {
-            Poll::Ready(Some(x)) => Poll::Ready((unsafe { self.get_unchecked_mut() }.f)(x)),
+        match Pin::new(&mut self.orig).poll_next(cx) {
+            Poll::Ready(Some(x)) => Poll::Ready((&mut self.f)(x)),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
