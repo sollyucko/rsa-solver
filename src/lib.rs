@@ -35,13 +35,13 @@ mod utils {
     where
         for<'a> &'a T: Add<Output = T> + Rem<Output = T>,
     {
-        fn modinv(&self, m: &T) -> Option<T> {
+        fn modinv(&self, m: &Self) -> Option<Self> {
             //modinverse(self, m)
             let ExtendedGcd { gcd, x, .. } = self.extended_gcd(m);
-            if !gcd.is_one() {
-                None
-            } else {
+            if gcd.is_one() {
                 Some(&(&(&x % m) + m) % m) // Deal with negative values properly
+            } else {
+                None
             }
         }
     }
