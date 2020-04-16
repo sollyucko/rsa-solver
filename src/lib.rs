@@ -4,7 +4,7 @@
 #![feature(fn_traits)]
 
 use crate::utils::{HasModInv, StreamExt2};
-use num_bigint::BigUint;
+use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{cast::FromPrimitive, One};
 use primal_tokio::primes_unbounded;
@@ -16,6 +16,7 @@ use tokio::stream::{Stream, StreamExt};
 
 mod utils {
     use num_integer::{ExtendedGcd, Integer};
+    use num_traits::Signed;
     use std::future::Future;
     use std::marker::PhantomData;
     use std::ops::{Add, Rem};
@@ -29,12 +30,11 @@ mod utils {
             Self: Sized;
     }
 
-    impl<T: Integer + Clone> HasModInv for T
+    impl<T: Integer + Clone + Signed> HasModInv for T
     where
         for<'a> &'a T: Add<Output = T> + Rem<Output = T>,
     {
         fn modinv(&self, m: &Self) -> Option<Self> {
-            //modinverse(self, m)
             let ExtendedGcd { gcd, x, .. } = self.extended_gcd(m);
             if gcd.is_one() {
                 Some(&(&(&x % m) + m) % m) // Deal with negative values properly
@@ -116,7 +116,7 @@ mod utils {
                 match Pin::new(&mut self.orig).poll_next(cx) {
                     Poll::Ready(Some(x)) => return Poll::Ready((&mut self.f)(x)),
                     Poll::Ready(None) => return Poll::Ready(None),
-                    Poll::Pending => {},
+                    Poll::Pending => {}
                 }
             }
         }
@@ -138,11 +138,11 @@ mod utils {
                 match Pin::new(&mut self.orig).poll_next(cx) {
                     Poll::Ready(Some(x)) => match (&mut self.f)(&x) {
                         Some(true) => return Poll::Ready(Some(x)),
-                        Some(false) => {},
+                        Some(false) => {}
                         None => return Poll::Ready(None),
                     },
                     Poll::Ready(None) => return Poll::Ready(None),
-                    Poll::Pending => {},
+                    Poll::Pending => return Poll::Pending,
                 }
             }
         }
@@ -211,7 +211,7 @@ pub enum Guess {
     Q(BigUint),
 }
 
-fn find_first_prime_factor<N>(n: N) -> impl Future<Output = Option<usize>> 
+fn find_first_prime_factor<N>(n: N) -> impl Future<Output = Option<usize>>
 where
     N: Integer + FromPrimitive + Unpin + 'static,
     for<'a> &'a N: Rem<&'a N, Output = N>,
@@ -245,8 +245,10 @@ fn check_guess(knowns: &RsaVars, guess: Guess, is_certain: bool) -> Option<Resul
             return check_guess(knowns, Guess::M(m), is_certain);
         }
         Guess::Tot(tot) => {
-            if let Some(d) = knowns.e.modinv(&tot) {
-                return check_guess(knowns, Guess::D(d), is_certain);
+            if let Some(d_signed) = BigInt::from(knowns.e.clone()).modinv(&BigInt::from(tot)) {
+                if let Some(d) = d_signed.to_biguint() {
+                    return check_guess(knowns, Guess::D(d), is_certain);
+                }
             }
         }
         Guess::Pq(p, q) => {
@@ -295,30 +297,84 @@ pub async fn find_m(knowns: &RsaVars) -> Result<BigUint, Option<Guess>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_traits::Zero;
+    use std::iter::{once, repeat};
     use tokio::stream::iter;
-    
-    /*#[tokio::test]
+
+    #[tokio::test]
     async fn test_filter_while_some_true() {
         assert_eq!(
-            iter(&[1, 2, 3]).filter_while(move |p| Some(true)).next().await,
-            Some(&1),
-        );
-    }*/
-    
-    #[tokio::test]
-    async fn test_filter_while_some_false() {
-        assert_eq!(
-            iter(&[1, 2, 3]).filter_while(move |p| Some(*p == &2)).next().await,
-            Some(&2),
+            iter(repeat(1))
+                .filter_while(move |_x| Some(true))
+                .next()
+                .await,
+            Some(1),
         );
     }
 
-    /*#[tokio::test]
-    async fn test_first_prime_factor_143() {
-        assert_eq!(find_first_prime_factor(BigUint::from(143u8)).await, Some(11));
-    }*/
+    #[tokio::test]
+    async fn test_filter_while_some_false() {
+        assert_eq!(
+            iter(once(1).chain(once(2)).chain(repeat(3)))
+                .filter_while(move |x| Some(*x == 2))
+                .next()
+                .await,
+            Some(2),
+        );
+    }
 
-    /*#[test]
+    #[tokio::test]
+    async fn test_filter_while_none() {
+        assert_eq!(
+            iter(once(1).chain(once(2)).chain(repeat(3)))
+                .filter_while(move |x| match *x {
+                    1 => Some(false),
+                    2 => None,
+                    3 => Some(true),
+                    _ => panic!(),
+                })
+                .next()
+                .await,
+            None,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_first_prime_factor_2_manual() {
+        assert_eq!(
+            primes_unbounded()
+                .filter_while(move |p| Some((&BigUint::from(2u8) % &BigUint::from(*p)).is_zero()))
+                .next()
+                .await,
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_first_primes_unbounded() {
+        assert_eq!(
+            primes_unbounded()
+                .filter_while(move |_p| Some(true))
+                .next()
+                .await,
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_first_prime_factor_2() {
+        assert_eq!(find_first_prime_factor(BigUint::from(2u8)).await, Some(2));
+    }
+
+    #[tokio::test]
+    async fn test_first_prime_factor_143() {
+        assert_eq!(
+            find_first_prime_factor(BigUint::from(143u8)).await,
+            Some(11)
+        );
+    }
+
+    #[test]
     fn blairsecrsa_1() {
         let knowns = RsaVars {
             n: BigUint::from(143u8),
@@ -327,5 +383,5 @@ mod tests {
         };
         let m = find_m(&knowns);
         assert_eq!(m, Ok(BigUint::from(130u8)));
-    }*/
+    }
 }
