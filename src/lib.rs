@@ -11,6 +11,7 @@ use primal_tokio::primes_unbounded;
 use std::convert::identity;
 use std::future::Future;
 use std::ops::Rem;
+use tokio::stream::empty;
 use tokio::stream::{Stream, StreamExt};
 
 // Helper stuff
@@ -225,8 +226,6 @@ where
 // TODO: find_first_prime_factor
 
 fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> {
-    use tokio::stream::*;
-
     empty().merge(
         utils::stream_from_future_option(find_first_prime_factor(knowns.n.clone()))
             .map(|p| (Guess::P(BigUint::from_usize(p).unwrap()), true)),
@@ -301,14 +300,16 @@ pub async fn find_m(knowns: &RsaVars) -> Result<BigUint, Option<Guess>> {
 /// Copied from https://blairsecrsa.clamchowder.repl.co/
 #[cfg(test)]
 mod tests {
+    use super::*;
+    
     #[test]
     fn blairsecrsa_1() {
         let knowns = RsaVars {
-            n: 143,
-            c: 26,
-            e: 17,
+            n: BigUint::from(143u8),
+            c: BigUint::from(26u8),
+            e: BigUint::from(17u8),
         };
         let m = find_m(&knowns);
-        assert_eq!(m, 130);
+        assert_eq!(m, Ok(BigUint::from(130u8)));
     }
 }
