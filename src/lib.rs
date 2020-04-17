@@ -2,22 +2,25 @@
 #![feature(generator_trait)]
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
+#![feature(type_ascription)]
 
 use crate::utils::{HasModInv, StreamExt2};
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
-use num_traits::{cast::FromPrimitive, One};
+use num_traits::{cast::{FromPrimitive, ToPrimitive}, One, Zero};
 use primal_tokio::primes_unbounded;
-use std::{convert::identity, future::Future, ops::Rem, string::FromUtf8Error};
-use tokio::stream::{self, empty, Stream, StreamExt};
+use std::{
+    convert::identity, future::Future, iter::successors, ops::Rem, rc::Rc, string::FromUtf8Error,
+};
+use tokio::stream::{self, Stream, StreamExt};
 
 mod utils {
+    use num_bigint::{BigInt, BigUint, Sign};
     use num_integer::{ExtendedGcd, Integer};
-    use num_traits::Signed;
+    use num_traits::One;
     use std::{
         future::Future,
         marker::PhantomData,
-        ops::{Add, Rem},
         pin::Pin,
         task::{Context, Poll},
     };
@@ -29,10 +32,7 @@ mod utils {
             Self: Sized;
     }
 
-    impl<T: Integer + Clone + Signed> HasModInv for T
-    where
-        for<'a> &'a T: Add<Output = T> + Rem<Output = T>,
-    {
+    impl HasModInv for BigInt {
         fn modinv(&self, m: &Self) -> Option<Self> {
             let ExtendedGcd { gcd, x, .. } = self.extended_gcd(m);
             if gcd.is_one() {
@@ -40,6 +40,14 @@ mod utils {
             } else {
                 None
             }
+        }
+    }
+
+    impl HasModInv for BigUint {
+        fn modinv(&self, m: &Self) -> Option<Self> {
+            BigInt::from_biguint(Sign::Plus, self.clone())
+                .modinv(&BigInt::from_biguint(Sign::Plus, m.clone()))?
+                .to_biguint()
         }
     }
 
@@ -223,11 +231,25 @@ where
     )
 }
 
-fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> {
-    empty().merge(
-        utils::stream_from_future_option(find_first_prime_factor(knowns.n.clone()))
-            .map(|p| (Guess::P(BigUint::from(p)), true)),
-    )
+fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> + 'static {
+    let knowns_rc1 = Rc::new(knowns.clone());
+    let knowns_rc2 = Rc::new(knowns.clone());
+    let e_u32_maybe = knowns.e.to_u32();
+    stream::empty()
+        .merge(
+            utils::stream_from_future_option(find_first_prime_factor(knowns.n.clone()))
+                .map(|p| (Guess::P(BigUint::from(p)), true)),
+        )
+        .merge(
+            if let Some(e_u32) = e_u32_maybe {
+                Box::new(stream::iter(successors(Some(BigUint::zero()), |i| Some(i + 1u8)))
+                    .map(move |i| (&knowns_rc1.c + &knowns_rc1.n * i).nth_root(e_u32))
+                    .take_while(move |m| m < &knowns_rc2.n)
+                    .map(|m| (Guess::M(m), false)))
+            } else {
+                Box::new(stream::empty())
+            }: Box<dyn Stream<Item = _> + Unpin>
+        )
 }
 
 fn check_guess(knowns: &RsaVars, guess: Guess, is_certain: bool) -> Option<Result<BigUint, Guess>> {
@@ -424,6 +446,6 @@ mod tests {
             e: BigUint::from(3u8),
         };
         let m = find_m(&knowns, stream::empty());
-        panic!(integer_to_text(m.unwrap()).unwrap());
+        assert_eq!(integer_to_text(m.unwrap()).unwrap(), "happy late birthday to kmh");
     }
 }
