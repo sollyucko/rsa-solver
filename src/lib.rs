@@ -11,6 +11,7 @@ use primal_tokio::primes_unbounded;
 use std::convert::identity;
 use std::future::Future;
 use std::ops::Rem;
+use std::string::FromUtf8Error;
 use tokio::stream::empty;
 use tokio::stream::{Stream, StreamExt};
 
@@ -280,8 +281,12 @@ fn check_guess(knowns: &RsaVars, guess: Guess, is_certain: bool) -> Option<Resul
 }
 
 #[tokio::main]
-pub async fn find_m(knowns: &RsaVars) -> Result<BigUint, Option<Guess>> {
+pub async fn find_m(
+    knowns: &RsaVars,
+    extra_guesses: impl Stream<Item = (Guess, bool)> + Unpin,
+) -> Result<BigUint, Option<Guess>> {
     match get_guesses(knowns)
+        .merge(extra_guesses)
         .map(|(guess, is_certain)| check_guess(knowns, guess, is_certain))
         .filter_map(identity)
         .next()
@@ -293,18 +298,22 @@ pub async fn find_m(knowns: &RsaVars) -> Result<BigUint, Option<Guess>> {
     }
 }
 
+pub fn integer_to_text(x: BigUint) -> Result<String, FromUtf8Error> {
+    String::from_utf8(x.to_bytes_be())
+}
+
 /// Copied from https://blairsecrsa.clamchowder.repl.co/
 #[cfg(test)]
 mod tests {
     use super::*;
     use num_traits::Zero;
     use std::iter::{once, repeat};
-    use tokio::stream::iter;
+    use tokio::stream;
 
     #[tokio::test]
     async fn test_filter_while_some_true() {
         assert_eq!(
-            iter(repeat(1))
+            stream::iter(repeat(1))
                 .filter_while(move |_x| Some(true))
                 .next()
                 .await,
@@ -315,7 +324,7 @@ mod tests {
     #[tokio::test]
     async fn test_filter_while_some_false() {
         assert_eq!(
-            iter(once(1).chain(once(2)).chain(repeat(3)))
+            stream::iter(once(1).chain(once(2)).chain(repeat(3)))
                 .filter_while(move |x| Some(*x == 2))
                 .next()
                 .await,
@@ -326,7 +335,7 @@ mod tests {
     #[tokio::test]
     async fn test_filter_while_none() {
         assert_eq!(
-            iter(once(1).chain(once(2)).chain(repeat(3)))
+            stream::iter(once(1).chain(once(2)).chain(repeat(3)))
                 .filter_while(move |x| match *x {
                     1 => Some(false),
                     2 => None,
@@ -381,7 +390,19 @@ mod tests {
             c: BigUint::from(26u8),
             e: BigUint::from(17u8),
         };
-        let m = find_m(&knowns);
+        let m = find_m(&knowns, stream::empty());
         assert_eq!(m, Ok(BigUint::from(130u8)));
+    }
+
+    #[test]
+    fn blairsecrsa_2() {
+        let knowns = RsaVars {
+            n: BigUint::parse_bytes(b"7189802717771567255220150620784419218541052212701457717541277400875935717509112424332675475828865427129929478478705214406863743117810353034221864597059029", 10).unwrap(),
+            c: BigUint::parse_bytes(b"6751783441286199006649089194985094993886902223296203844561033180464677568123886846622027779778424322403187862229955233916571566534078605876657505484780416", 10).unwrap(),
+            e: BigUint::from(65537u32),
+        };
+        let m = find_m(&knowns, stream::once((Guess::D(BigUint::parse_bytes(b"60521148348322035935880237003007023038820012166261869999800693239186381293403217600217141646114073805127564478574625302642602746961775824519317916708573", 10).unwrap()), true)));
+        assert_eq!(m, Ok(BigUint::parse_bytes(b"44996602880312612755648108720916678387235488592111181958200111412", 10).unwrap()));
+        println!("{:?}", integer_to_text(m.unwrap()).unwrap());
     }
 }
