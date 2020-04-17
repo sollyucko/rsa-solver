@@ -7,7 +7,10 @@
 use crate::utils::{HasModInv, StreamExt2};
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
-use num_traits::{cast::{FromPrimitive, ToPrimitive}, One, Zero};
+use num_traits::{
+    cast::{FromPrimitive, ToPrimitive},
+    One, Zero,
+};
 use primal_tokio::primes_unbounded;
 use std::{
     convert::identity, future::Future, iter::successors, ops::Rem, rc::Rc, string::FromUtf8Error,
@@ -242,19 +245,19 @@ fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> + 'static 
         )
         .merge(
             if let Some(e_u32) = e_u32_maybe {
-                Box::new(stream::iter(successors(Some(BigUint::zero()), |i| Some(i + 1u8)))
-                    .map(move |i| (&knowns_rc1.c + &knowns_rc1.n * i).nth_root(e_u32))
-                    .take_while(move |m| m < &knowns_rc2.n)
-                    .map(|m| (Guess::M(m), false)))
+                Box::new(
+                    stream::iter(successors(Some(BigUint::zero()), |i| Some(i + 1_u8)))
+                        .map(move |i| (&knowns_rc1.c + &knowns_rc1.n * i).nth_root(e_u32))
+                        .take_while(move |m| m < &knowns_rc2.n)
+                        .map(|m| (Guess::M(m), false)),
+                )
             } else {
                 Box::new(stream::empty())
-            }: Box<dyn Stream<Item = _> + Unpin>
+            }: Box<dyn Stream<Item = _> + Unpin>,
         )
 }
 
 fn check_guess(knowns: &RsaVars, guess: Guess, is_certain: bool) -> Option<Result<BigUint, Guess>> {
-    println!("{:?} {:?} {:?}", knowns, &guess, is_certain);
-
     match guess.clone() {
         Guess::M(m) => {
             if m.modpow(&knowns.e, &knowns.n) == knowns.c {
@@ -318,7 +321,9 @@ pub async fn find_m(
     }
 }
 
-pub fn integer_to_text(x: BigUint) -> Result<String, FromUtf8Error> {
+/// # Errors
+/// Errors if UTF-8 decoding fails.
+pub fn integer_to_text(x: &BigUint) -> Result<String, FromUtf8Error> {
     String::from_utf8(x.to_bytes_be())
 }
 
@@ -430,12 +435,9 @@ mod tests {
         };
         let m = find_m(&knowns, stream::once((Guess::D(biguint_base_10!(b"60521148348322035935880237003007023038820012166261869999800693239186381293403217600217141646114073805127564478574625302642602746961775824519317916708573")), true)));
         assert_eq!(
-            m,
-            Ok(biguint_base_10!(
-                b"44996602880312612755648108720916678387235488592111181958200111412"
-            ))
+            integer_to_text(&m.unwrap()).unwrap(),
+            "math_team_moved_to_room_314"
         );
-        println!("{:?}", integer_to_text(m.unwrap()).unwrap());
     }
 
     #[test]
@@ -446,6 +448,9 @@ mod tests {
             e: BigUint::from(3u8),
         };
         let m = find_m(&knowns, stream::empty());
-        assert_eq!(integer_to_text(m.unwrap()).unwrap(), "happy late birthday to kmh");
+        assert_eq!(
+            integer_to_text(&m.unwrap()).unwrap(),
+            "happy late birthday to kmh"
+        );
     }
 }
