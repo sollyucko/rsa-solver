@@ -8,21 +8,19 @@ use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{cast::FromPrimitive, One};
 use primal_tokio::primes_unbounded;
-use std::convert::identity;
-use std::future::Future;
-use std::ops::Rem;
-use std::string::FromUtf8Error;
-use tokio::stream::empty;
-use tokio::stream::{Stream, StreamExt};
+use std::{convert::identity, future::Future, ops::Rem, string::FromUtf8Error};
+use tokio::stream::{self, empty, Stream, StreamExt};
 
 mod utils {
     use num_integer::{ExtendedGcd, Integer};
     use num_traits::Signed;
-    use std::future::Future;
-    use std::marker::PhantomData;
-    use std::ops::{Add, Rem};
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
+    use std::{
+        future::Future,
+        marker::PhantomData,
+        ops::{Add, Rem},
+        pin::Pin,
+        task::{Context, Poll},
+    };
     use tokio::stream::Stream;
 
     pub trait HasModInv {
@@ -302,6 +300,13 @@ pub fn integer_to_text(x: BigUint) -> Result<String, FromUtf8Error> {
     String::from_utf8(x.to_bytes_be())
 }
 
+#[macro_export]
+macro_rules! biguint_base_10 {
+    ($bytestring:literal) => {
+        BigUint::parse_bytes($bytestring, 10).unwrap()
+    };
+}
+
 /// Copied from https://blairsecrsa.clamchowder.repl.co/
 #[cfg(test)]
 mod tests {
@@ -397,12 +402,28 @@ mod tests {
     #[test]
     fn blairsecrsa_2() {
         let knowns = RsaVars {
-            n: BigUint::parse_bytes(b"7189802717771567255220150620784419218541052212701457717541277400875935717509112424332675475828865427129929478478705214406863743117810353034221864597059029", 10).unwrap(),
-            c: BigUint::parse_bytes(b"6751783441286199006649089194985094993886902223296203844561033180464677568123886846622027779778424322403187862229955233916571566534078605876657505484780416", 10).unwrap(),
+            n: biguint_base_10!(b"7189802717771567255220150620784419218541052212701457717541277400875935717509112424332675475828865427129929478478705214406863743117810353034221864597059029"),
+            c: biguint_base_10!(b"6751783441286199006649089194985094993886902223296203844561033180464677568123886846622027779778424322403187862229955233916571566534078605876657505484780416"),
             e: BigUint::from(65537u32),
         };
-        let m = find_m(&knowns, stream::once((Guess::D(BigUint::parse_bytes(b"60521148348322035935880237003007023038820012166261869999800693239186381293403217600217141646114073805127564478574625302642602746961775824519317916708573", 10).unwrap()), true)));
-        assert_eq!(m, Ok(BigUint::parse_bytes(b"44996602880312612755648108720916678387235488592111181958200111412", 10).unwrap()));
+        let m = find_m(&knowns, stream::once((Guess::D(biguint_base_10!(b"60521148348322035935880237003007023038820012166261869999800693239186381293403217600217141646114073805127564478574625302642602746961775824519317916708573")), true)));
+        assert_eq!(
+            m,
+            Ok(biguint_base_10!(
+                b"44996602880312612755648108720916678387235488592111181958200111412"
+            ))
+        );
         println!("{:?}", integer_to_text(m.unwrap()).unwrap());
+    }
+
+    #[test]
+    fn blairsecrsa_3() {
+        let knowns = RsaVars {
+            n: biguint_base_10!(b"14797548547156632301969225821934492731102670684667903621151016093295053040114096328625926272798085632301613712041652489095840382483306442874016530106414090585452689093972987761198773025427792415934797604114686665980378348144178690723693394148357070361961816231025853178162613437031794991120929868540933346797435026495032392347502053866152046793252790268130353779532453717072637972954909589584203377069165031675713590802461859140674796815146481680286887646674083998943581947179319792591983283853613837503874609657218599157198238900748459605338558300914906522418271650774235413036583240805079020036020551892796083524871"),
+            c: biguint_base_10!(b"4719076732212728094375303980830350595206208731351841162735845737519200854000512597594943849375922531193477166368671188265816054600777424637756103377599837752045594469968862965796572293632"),
+            e: BigUint::from(3u8),
+        };
+        let m = find_m(&knowns, stream::empty());
+        panic!(integer_to_text(m.unwrap()).unwrap());
     }
 }
