@@ -234,10 +234,32 @@ where
     )
 }
 
+#[allow(clippy::cast_sign_loss)]
+#[inline]
+fn isize_abs_as_usize(a: isize) -> usize {
+    if a == isize::min_value() {
+        a as usize
+    } else {
+        a.abs() as usize
+    }
+}
+
+#[allow(clippy::cast_sign_loss)]
+#[inline]
+fn add_biguint_isize(a: &BigUint, b: isize) -> BigUint {
+    if b < 0 {
+        a - isize_abs_as_usize(b)
+    } else {
+        a + (b as usize)
+    }
+}
+
 fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> + 'static {
     let knowns_rc1 = Rc::new(knowns.clone());
     let knowns_rc2 = Rc::new(knowns.clone());
     let e_u32_maybe = knowns.e.to_u32();
+    let approx_sqrt_n = knowns.n.sqrt();
+
     stream::empty()
         .merge(
             utils::stream_from_future_option(find_first_prime_factor(knowns.n.clone()))
@@ -254,6 +276,10 @@ fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> + 'static 
             } else {
                 Box::new(stream::empty())
             }: Box<dyn Stream<Item = _> + Unpin>,
+        )
+        .merge(
+            stream::iter((0_isize..=isize::MAX).flat_map(|i| vec![i, -i - 1]))
+                .map(move |i| (Guess::P(add_biguint_isize(&approx_sqrt_n, i)), false)),
         )
 }
 
@@ -452,5 +478,16 @@ mod tests {
             integer_to_text(&m.unwrap()).unwrap(),
             "happy late birthday to kmh"
         );
+    }
+
+    #[test]
+    fn blairsecrsa_4() {
+        let knowns = RsaVars {
+            n: biguint_base_10!(b"69978962132462700542314544691772639070611340838796818854806308882491349635729665000740158256677514009581276654324098401643583698039286173305307386463858790481569491558519134818744276395633014587167181270948385909932023948295336629660458744242415640711595427718601555108035280623072770272466690875453227602019"),
+            c: biguint_base_10!(b"69266611370829490409492107191591011965380547104132610658405993536354837660890492057218061779222565998572564945825152853076598050713201442599297306242754142186965496804589032543650867598357898675934350067192085061215624008917428508725240979881417359956262115203611248687828748979793921532789960399322928138049"),
+            e: biguint_base_10!(b"69266611370829490409492107191591011965380547104132610658405993536354837660890492057218061779222565998572564945825152853076598050713201442599297306242754142186965496804589032543650867598357898675934350067192085061215624008917428508725240979881417359956262115203611248687828748979793921532789960399322928138049"),
+        };
+        let m = find_m(&knowns, stream::empty());
+        panic!(integer_to_text(&m.unwrap()).unwrap());
     }
 }
