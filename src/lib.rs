@@ -4,17 +4,15 @@
 #![feature(fn_traits)]
 #![feature(type_ascription)]
 
-use crate::utils::{HasModInv, StreamExt2};
+use crate::utils::HasModInv;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{
     cast::{FromPrimitive, ToPrimitive},
-    One, Zero,
+    CheckedSub, One, Zero,
 };
 use primal_tokio::primes_unbounded;
-use std::{
-    convert::identity, future::Future, iter::successors, ops::Rem, rc::Rc, string::FromUtf8Error,
-};
+use std::{convert::identity, iter::successors, string::FromUtf8Error};
 use tokio::stream::{self, Stream, StreamExt};
 
 mod utils {
@@ -76,17 +74,6 @@ mod utils {
                     Poll::Pending => Poll::Pending,
                 }
             }
-        }
-    }
-    pub fn stream_from_future_option<T, F: Future<Output = Option<T>>>(
-        fut: F,
-    ) -> impl Stream<Item = T>
-    where
-        F: Unpin,
-    {
-        StreamFromFutureOption {
-            fut,
-            is_complete: false,
         }
     }
 
@@ -175,26 +162,6 @@ mod utils {
             (self.f)(&mut self.state, args)
         }
     }
-
-    pub struct WithData<Val, Data> {
-        val: Val,
-        #[allow(dead_code)]
-        data_box: Box<Data>,
-    }
-    pub fn from_data<'a, Val: 'a, Data: 'a>(
-        mut data_box: Box<Data>,
-        make_val: impl FnOnce(&'a mut Data) -> Val,
-    ) -> WithData<Val, Data> {
-        let val = make_val(unsafe { &mut *(&mut *data_box as *mut _) });
-        WithData { val, data_box }
-    }
-    impl<Val: Future, Data> Future for WithData<Val, Data> {
-        type Output = Val::Output;
-
-        fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Val::Output> {
-            unsafe { self.map_unchecked_mut(|x| &mut x.val) }.poll(cx)
-        }
-    }
 }
 
 // TODO: figure out what to do with d, p, q, & tot
@@ -221,65 +188,50 @@ pub enum Guess {
     Q(BigUint),
 }
 
-fn find_first_prime_factor<N>(n: N) -> impl Future<Output = Option<usize>>
-where
-    N: Integer + FromPrimitive + Unpin + 'static,
-    for<'a> &'a N: Rem<&'a N, Output = N>,
-{
-    utils::from_data(
-        Box::new(
-            primes_unbounded().filter_while(move |p| Some((&n % &N::from_usize(*p)?).is_zero())),
-        ),
-        StreamExt::next,
-    )
+#[allow(clippy::cast_sign_loss)]
+#[inline]
+const fn isize_neg_as_usize(a: isize) -> usize {
+    a.wrapping_neg() as usize
 }
 
 #[allow(clippy::cast_sign_loss)]
 #[inline]
-fn isize_abs_as_usize(a: isize) -> usize {
-    if a == isize::min_value() {
-        a as usize
-    } else {
-        a.abs() as usize
-    }
-}
-
-#[allow(clippy::cast_sign_loss)]
-#[inline]
-fn add_biguint_isize(a: &BigUint, b: isize) -> BigUint {
+fn add_biguint_isize_checked(a: &BigUint, b: isize) -> Option<BigUint> {
     if b < 0 {
-        a - isize_abs_as_usize(b)
+        a.checked_sub(&BigUint::from_usize(isize_neg_as_usize(b))?)
     } else {
-        a + (b as usize)
+        Some(a + (b as usize))
     }
 }
 
 fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> + 'static {
-    let knowns_rc1 = Rc::new(knowns.clone());
-    let knowns_rc2 = Rc::new(knowns.clone());
+    let c1 = knowns.c.clone();
+    let n1 = knowns.n.clone();
+    let n2 = knowns.n.clone();
     let e_u32_maybe = knowns.e.to_u32();
     let approx_sqrt_n = knowns.n.sqrt();
 
     stream::empty()
         .merge(
-            utils::stream_from_future_option(find_first_prime_factor(knowns.n.clone()))
-                .map(|p| (Guess::P(BigUint::from(p)), true)),
+            stream::empty()
+                .merge(primes_unbounded().map(BigUint::from))
+                .merge(
+                    stream::iter((0_isize..=isize::MAX).flat_map(|i| vec![i, -i - 1]))
+                        .filter_map(move |i| Some(add_biguint_isize_checked(&approx_sqrt_n, i)?)),
+                )
+                .map(|p| (Guess::P(p), false)),
         )
         .merge(
             if let Some(e_u32) = e_u32_maybe {
                 Box::new(
                     stream::iter(successors(Some(BigUint::zero()), |i| Some(i + 1_u8)))
-                        .map(move |i| (&knowns_rc1.c + &knowns_rc1.n * i).nth_root(e_u32))
-                        .take_while(move |m| m < &knowns_rc2.n)
+                        .map(move |i| (&c1 + &n1 * i).nth_root(e_u32))
+                        .take_while(move |m| m < &n2)
                         .map(|m| (Guess::M(m), false)),
                 )
             } else {
                 Box::new(stream::empty())
             }: Box<dyn Stream<Item = _> + Unpin>,
-        )
-        .merge(
-            stream::iter((0_isize..=isize::MAX).flat_map(|i| vec![i, -i - 1]))
-                .map(move |i| (Guess::P(add_biguint_isize(&approx_sqrt_n, i)), false)),
         )
 }
 
@@ -364,6 +316,7 @@ macro_rules! biguint_base_10 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::StreamExt2;
     use num_traits::Zero;
     use std::iter::{once, repeat};
     use tokio::stream;
@@ -425,19 +378,6 @@ mod tests {
                 .next()
                 .await,
             Some(2)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_first_prime_factor_2() {
-        assert_eq!(find_first_prime_factor(BigUint::from(2u8)).await, Some(2));
-    }
-
-    #[tokio::test]
-    async fn test_first_prime_factor_143() {
-        assert_eq!(
-            find_first_prime_factor(BigUint::from(143u8)).await,
-            Some(11)
         );
     }
 
