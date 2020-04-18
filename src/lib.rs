@@ -3,6 +3,7 @@
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
 #![feature(type_ascription)]
+#![feature(iter_map_while)]
 
 use crate::utils::HasModInv;
 use num_bigint::{BigInt, BigUint};
@@ -12,7 +13,7 @@ use num_traits::{
     CheckedSub, One, Zero,
 };
 use primal_tokio::primes_unbounded;
-use std::{convert::identity, iter::successors, string::FromUtf8Error};
+use std::{convert::identity, iter, mem::swap, string::FromUtf8Error};
 use tokio::stream::{self, Stream, StreamExt};
 
 mod utils {
@@ -204,10 +205,57 @@ fn add_biguint_isize_checked(a: &BigUint, b: isize) -> Option<BigUint> {
     }
 }
 
+fn abs_bigint(a: BigInt) -> BigUint {
+    let (_sign, digits) = a.to_u32_digits();
+    BigUint::new(digits)
+}
+
+// based on https://github.com/sagi/code_for_blog/blob/master/2016/wieners-rsa-attack/cf.py
+fn get_cf_expansion(mut n: BigUint, mut d: BigUint) -> impl Iterator<Item = BigUint> {
+    iter::repeat_with(move || {
+        println!("{}", d);
+        if d.is_zero() {
+            None
+        } else {
+            let q = &n / &d;
+            let r = &n % &d;
+            swap(&mut n, &mut d); // n = d
+            d = r;
+            Some(q)
+        }
+    })
+    .map_while(identity)
+}
+fn get_convergents(e: impl Iterator<Item = BigUint>) -> impl Iterator<Item = (BigUint, BigUint)> {
+    let mut ni2 = BigUint::zero();
+    let mut ni1 = BigUint::one();
+
+    let mut di2 = BigUint::one();
+    let mut di1 = BigUint::zero();
+
+    e.map(move |ei| {
+        let (ni, di) = ((&ei * &ni1 + &ni2).clone(), (&ei * &di1 + &di2).clone());
+        swap(&mut ni2, &mut ni1); // ni2 = ni1
+        ni1 = ni.clone();
+        swap(&mut di2, &mut di1); // di2 = di1
+        di1 = di.clone();
+        (ni, di)
+    })
+}
+fn get_wieners_pq(e: &BigInt, n: &BigInt, pk: BigInt, pd: BigInt) -> (BigInt, BigInt) {
+    let possible_phi = (e * pd - 1u8) / pk;
+    let a = -(possible_phi - n - 1u8);
+    let b = BigInt::from(abs_bigint(&a * &a - 4u8 * n).sqrt());
+    ((&a + &b) / 2u8, (a - b) / 2u8)
+}
+// ---
+
 fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> + 'static {
     let c1 = knowns.c.clone();
     let n1 = knowns.n.clone();
     let n2 = knowns.n.clone();
+    let e3 = BigInt::from(knowns.e.clone());
+    let n3 = BigInt::from(knowns.n.clone());
     let e_u32_maybe = knowns.e.to_u32();
     let approx_sqrt_n = knowns.n.sqrt();
 
@@ -224,7 +272,7 @@ fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> + 'static 
         .merge(
             if let Some(e_u32) = e_u32_maybe {
                 Box::new(
-                    stream::iter(successors(Some(BigUint::zero()), |i| Some(i + 1_u8)))
+                    stream::iter(iter::successors(Some(BigUint::zero()), |i| Some(i + 1_u8)))
                         .map(move |i| (&c1 + &n1 * i).nth_root(e_u32))
                         .take_while(move |m| m < &n2)
                         .map(|m| (Guess::M(m), false)),
@@ -233,9 +281,29 @@ fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> + 'static 
                 Box::new(stream::empty())
             }: Box<dyn Stream<Item = _> + Unpin>,
         )
+        // based on https://github.com/sagi/code_for_blog/blob/master/2016/wieners-rsa-attack/cf.py
+        .merge(stream::iter(
+            get_convergents(get_cf_expansion(knowns.e.clone(), knowns.n.clone()))
+                .filter(|(pk, _pd)| !pk.is_zero())
+                .map(|(pk, pd)| (BigInt::from(pk), BigInt::from(pd)))
+                .flat_map(move |(pk, pd)| {
+                    let (pp, pq) = get_wieners_pq(&e3, &n3, pk, pd);
+                    vec![
+                        (Guess::P(abs_bigint(pp)), false),
+                        (Guess::Q(abs_bigint(pq)), false),
+                    ]
+                }),
+        ))
+        // ---
+        .merge(
+            stream::iter(iter::successors(Some(BigUint::zero()), |i| Some(i + 1_u8)))
+                .map(|i| (Guess::D(i), false)),
+        )
 }
 
 fn check_guess(knowns: &RsaVars, guess: Guess, is_certain: bool) -> Option<Result<BigUint, Guess>> {
+    //println!("{:?}\n", guess.clone());
+
     match guess.clone() {
         Guess::M(m) => {
             if m.modpow(&knowns.e, &knowns.n) == knowns.c {
@@ -256,7 +324,7 @@ fn check_guess(knowns: &RsaVars, guess: Guess, is_certain: bool) -> Option<Resul
         Guess::Pq(p, q) => {
             if !p.is_one() && !q.is_one() && p.clone() * q.clone() == knowns.n {
                 let tot = BigUint::lcm(&(p - BigUint::one()), &(q - BigUint::one()));
-                return check_guess(knowns, Guess::Tot(tot), is_certain);
+                return check_guess(knowns, Guess::Tot(tot), true);
             }
         }
         Guess::P(p) => {
@@ -378,6 +446,50 @@ mod tests {
                 .next()
                 .await,
             Some(2)
+        );
+    }
+
+    #[test]
+    fn test_get_cf_expansion() {
+        assert_eq!(
+            get_cf_expansion(BigUint::from(123u8), BigUint::from(456u16)).collect::<Vec<_>>(),
+            (&[0, 3, 1, 2, 2, 2, 2])
+                .iter()
+                .map(|x: &u8| BigUint::from(*x))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_get_convergents() {
+        assert_eq!(
+            get_convergents([0, 3, 1, 2, 2, 2, 2].iter().map(|x: &u8| BigUint::from(*x)))
+                .collect::<Vec<_>>(),
+            (&[
+                (0, 1),
+                (1, 3),
+                (1, 4),
+                (3, 11),
+                (7, 26),
+                (17, 63),
+                (41, 152)
+            ])
+                .iter()
+                .map(|x: &(u8, u8)| (BigUint::from(x.0), BigUint::from(x.1)))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_get_wieners_pq() {
+        assert_eq!(
+            get_wieners_pq(
+                &BigInt::from(3i8),
+                &BigInt::from(1234567890i64),
+                BigInt::from(7i8),
+                BigInt::from(26i8)
+            ),
+            (BigInt::from(1234567878i64), BigInt::one())
         );
     }
 
