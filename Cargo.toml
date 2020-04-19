@@ -5,7 +5,7 @@ authors = ["solomonu"]
 edition = "2018"
 description = "Uses various attacks against RSA to efficiently brute-force m from c, e, and n."
 categories = ["algorithms", "concurrency", "cryptography"]
-tags = ["rsa"]
+keywords = ["rsa"]
 license = "CC0-1.0"
 readme = "README.md"
 repository = "https://github.com/sollyucko/rsa-solver"
@@ -16,9 +16,12 @@ num-bigint = "0.2"
 modinverse = "0.1"
 num-traits = "0.2"
 crossbeam-channel = "0.4"
-tokio = { version = "0.2", features = ["full"] }
+tokio = { version = "0.2", features = ["stream"] }
 primal-tokio = "0.1"
 futures-core = "0.3"
+
+[dev-dependencies]
+tokio = { version = "0.2", features = ["macros"] }
 
 # primal = "0.2"
 # pool = "0.1"

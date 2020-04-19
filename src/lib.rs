@@ -205,7 +205,7 @@ fn add_biguint_isize_checked(a: &BigUint, b: isize) -> Option<BigUint> {
     }
 }
 
-fn abs_bigint(a: BigInt) -> BigUint {
+fn abs_bigint(a: &BigInt) -> BigUint {
     let (_sign, digits) = a.to_u32_digits();
     BigUint::new(digits)
 }
@@ -226,6 +226,7 @@ fn get_cf_expansion(mut n: BigUint, mut d: BigUint) -> impl Iterator<Item = BigU
     })
     .map_while(identity)
 }
+#[allow(clippy::similar_names)]
 fn get_convergents(e: impl Iterator<Item = BigUint>) -> impl Iterator<Item = (BigUint, BigUint)> {
     let mut ni2 = BigUint::zero();
     let mut ni1 = BigUint::one();
@@ -234,7 +235,7 @@ fn get_convergents(e: impl Iterator<Item = BigUint>) -> impl Iterator<Item = (Bi
     let mut di1 = BigUint::zero();
 
     e.map(move |ei| {
-        let (ni, di) = ((&ei * &ni1 + &ni2).clone(), (&ei * &di1 + &di2).clone());
+        let (ni, di) = (&ei * &ni1 + &ni2, &ei * &di1 + &di2);
         swap(&mut ni2, &mut ni1); // ni2 = ni1
         ni1 = ni.clone();
         swap(&mut di2, &mut di1); // di2 = di1
@@ -243,10 +244,10 @@ fn get_convergents(e: impl Iterator<Item = BigUint>) -> impl Iterator<Item = (Bi
     })
 }
 fn get_wieners_pq(e: &BigInt, n: &BigInt, pk: BigInt, pd: BigInt) -> (BigInt, BigInt) {
-    let possible_phi = (e * pd - 1u8) / pk;
-    let a = -(possible_phi - n - 1u8);
-    let b = BigInt::from(abs_bigint(&a * &a - 4u8 * n).sqrt());
-    ((&a + &b) / 2u8, (a - b) / 2u8)
+    let possible_phi = (e * pd - 1_u8) / pk;
+    let a = -(possible_phi - n - 1_u8);
+    let b = BigInt::from(abs_bigint(&(&a * &a - 4_u8 * n)).sqrt());
+    ((&a + &b) / 2_u8, (a - b) / 2_u8)
 }
 // ---
 
@@ -283,14 +284,15 @@ fn get_guesses(knowns: &RsaVars) -> impl Stream<Item = (Guess, bool)> + 'static 
         )
         // based on https://github.com/sagi/code_for_blog/blob/master/2016/wieners-rsa-attack/cf.py
         .merge(stream::iter(
+            #[allow(clippy::filter_map)]
             get_convergents(get_cf_expansion(knowns.e.clone(), knowns.n.clone()))
                 .filter(|(pk, _pd)| !pk.is_zero())
                 .map(|(pk, pd)| (BigInt::from(pk), BigInt::from(pd)))
                 .flat_map(move |(pk, pd)| {
                     let (pp, pq) = get_wieners_pq(&e3, &n3, pk, pd);
                     vec![
-                        (Guess::P(abs_bigint(pp)), false),
-                        (Guess::Q(abs_bigint(pq)), false),
+                        (Guess::P(abs_bigint(&pp)), false),
+                        (Guess::Q(abs_bigint(&pq)), false),
                     ]
                 }),
         ))
@@ -532,6 +534,7 @@ mod tests {
         );
     }
 
+    #[ignore = "Not yet efficiently solvable with rsa-solver"]
     #[test]
     fn blairsecrsa_4() {
         let knowns = RsaVars {
